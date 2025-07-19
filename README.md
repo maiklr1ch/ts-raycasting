@@ -1,6 +1,6 @@
 # 3D raycasting
 
-3D Raycasting was implemented way much simpler, that in C, with TypeScript.
+3D Raycasting was implemented a way much simpler, than in C, with TypeScript.
 
 Source article (written in C++): [Raycasting](https://lodev.org/cgtutor/raycasting.html)
 
