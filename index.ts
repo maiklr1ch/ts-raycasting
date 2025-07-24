@@ -1,10 +1,11 @@
 
 const EPS = 1e-7
-const NEAR_CLIPPING_PLANE = 1.0
+const NEAR_CLIPPING_PLANE = EPS
+const FAR_CLIPPING_PLANE = 10.0
 const FOV = Math.PI / 2
 const SCREEN_WIDTH = 800 // count of rays
 const PLAYER_STEP_LEN = 0.5
-const CAMERA_SENSITIVITY = 0.3
+const PLAYER_SPEED = 2.5
 
 class Vector2 {
   x: number
@@ -40,7 +41,11 @@ class Vector2 {
   }
 
   length(): number {
-    return Math.sqrt(this.x * this.x + this.y * this.y)
+    return Math.sqrt(this.sqrLength())
+  }
+
+  sqrLength(): number {
+    return this.x * this.x + this.y * this.y
   }
 
   norm(): Vector2 {
@@ -59,6 +64,10 @@ class Vector2 {
 
   distanceTo(that: Vector2): number {
     return that.sub(this).length()
+  }
+
+  sqrDistanceTo(that: Vector2): number {
+    return that.sub(this).sqrLength()
   }
 
   lerp(that: Vector2, alpha: number): Vector2 {
@@ -93,7 +102,63 @@ class Player {
   }
 }
 
-type Scene = Array<Array<string | null>>
+class Color {
+  r: number
+  g: number
+  b: number
+  a: number
+
+  constructor(r: number, g: number, b: number, a: number) {
+    this.r = r
+    this.g = g
+    this.b = b
+    this.a = a
+  }
+
+  static fromImageData(data: Uint8ClampedArray): Color {
+    const [r, g, b, a] = data
+    return new Color(r / 255, g / 255, b / 255, a / 255)
+  }
+
+  static red(): Color {
+    return new Color(1, 0, 0, 1)
+  }
+
+  static green(): Color {
+    return new Color(0, 1, 0, 1)
+  }
+
+  static blue(): Color {
+    return new Color(0, 0, 1, 1)
+  }
+
+  static yellow(): Color {
+    return new Color(1, 1, 0, 1)
+  }
+
+  static purple(): Color {
+    return new Color(1, 0, 1, 1)
+  }
+
+  static cyan(): Color {
+    return new Color(0, 1, 1, 1)
+  }
+
+  brightness(factor: number): Color {
+    return new Color(factor * this.r, factor * this.g, factor * this.b, this.a)
+  }
+
+  toStyle(): string {
+    return `rgba(
+      ${Math.floor(this.r * 255)}, 
+      ${Math.floor(this.g * 255)}, 
+      ${Math.floor(this.b * 255)}, 
+      ${this.a}
+    )`
+  }
+}
+
+type Scene = Array<Array<Color | HTMLImageElement | null>>
 
 function canvasSize(ctx: CanvasRenderingContext2D): Vector2 {
   return new Vector2(ctx.canvas.width, ctx.canvas.height)
@@ -153,7 +218,7 @@ function rayStep(p1: Vector2, p2: Vector2): Vector2 {
       const y3 = snap(p2.y, d.y)
       const x3 = (y3 - c) / k
       const p3t = new Vector2(x3, y3)
-      if (p2.distanceTo(p3) > p2.distanceTo(p3t))
+      if (p2.sqrDistanceTo(p3) > p2.sqrDistanceTo(p3t))
         p3 = p3t
     }
   } else {
@@ -172,9 +237,10 @@ function insideScene(scene: Scene, p: Vector2): boolean {
 }
 
 function castRay(scene: Scene, p1: Vector2, p2: Vector2): Vector2 {
-  while (true) {
+  let start = p1
+  while (start.sqrDistanceTo(p1) < FAR_CLIPPING_PLANE ** 2) {
     const c = hittingCell(p1, p2)
-    if (!insideScene(scene, c) || scene[c.y][c.x] !== null)
+    if (insideScene(scene, c) && scene[c.y][c.x] !== null)
       break
     const p3 = rayStep(p1, p2)
     p1 = p2;
@@ -221,10 +287,13 @@ function renderMinimap(
   ctx.lineWidth = 0.06
   for (let y = 0; y < gridSize.y; y++) {
     for (let x = 0; x < gridSize.x; x++) {
-      const color = scene[y][x]
-      if (color !== null) {
-        ctx.fillStyle = color
+      const cell = scene[y][x]
+      if (cell instanceof Color) {
+        ctx.fillStyle = cell.toStyle()
         ctx.fillRect(x, y, 1, 1)
+      }
+      else if (cell instanceof HTMLImageElement) {
+        ctx.drawImage(cell, x, y, 1, 1)
       }
     }
   }
@@ -275,13 +344,45 @@ function renderScene(ctx: CanvasRenderingContext2D, player: Player, scene: Scene
     const p = castRay(scene, player.position, r1.lerp(r2, x / SCREEN_WIDTH))
     const c = hittingCell(player.position, p)
     if (insideScene(scene, c)) {
-      const color = scene[c.y][c.x]
-      if (color !== null) {
-        const v = p.sub(player.position)
-        const d = Vector2.fromAngle(player.direction)
-        const stripHeight = ctx.canvas.height / v.dot(d)// distancePointToLine(r1,r2,p)
-        ctx.fillStyle = color
+      const cell = scene[c.y][c.x]
+
+      const v = p.sub(player.position)
+      const d = Vector2.fromAngle(player.direction)
+      const stripHeight = ctx.canvas.height / v.dot(d) // distancePointToLine(r1,r2,p)
+
+      if (cell instanceof Color) {
+        ctx.fillStyle = cell.brightness(1 / v.dot(d)).toStyle()
         ctx.fillRect(x * stripWidth, (ctx.canvas.height - stripHeight) / 2, stripWidth + 1, stripHeight)
+      }
+      else if (cell instanceof HTMLImageElement) {
+        let u = 0
+        const t = p.sub(c)
+        if ((Math.abs(t.x) < EPS || Math.abs(t.x - 1) < EPS) && t.y > 0)
+          u = t.y
+        else
+          u = t.x
+        const txStep = cell.width / SCREEN_WIDTH
+        const topTx = (ctx.canvas.height - stripHeight) / 2
+        ctx.drawImage(cell,
+          u * cell.width,
+          0,
+          txStep,
+          cell.height,
+          x * stripWidth,
+          topTx,
+          stripWidth,
+          stripHeight
+        )
+
+        // const imageData = ctx.getImageData(x * stripWidth, topTx, 1, stripHeight).data // shading texture
+        // console.log(imageData.length/4,stripHeight)
+        // for (let y = topTx; y < topTx + stripHeight; y++) {
+        //   ctx.fillStyle = Color
+        //     .fromImageData(imageData.slice(4 * (y - topTx), 4 * (y - topTx + 1)))
+        //     .brightness(1 / v.dot(d))
+        //     .toStyle()
+        //   ctx.fillRect(x * stripWidth, y, stripWidth, 1)
+        // }
       }
     }
   }
@@ -298,73 +399,131 @@ function renderGame(ctx: CanvasRenderingContext2D, player: Player, scene: Scene)
   renderMinimap(ctx, player, minimapPosition, minimapSize, scene)
 }
 
-const game = document.getElementById('game') as (HTMLCanvasElement | null);
-if (game === null)
-  throw new Error("No canvas with id `game` is found")
+async function loadImageData(url: string): Promise<HTMLImageElement> {
+  const img = new Image()
+  img.src = url
+  img.crossOrigin = "anonymous"
+  return new Promise((res, rej) => {
+    img.onload = () => res(img)
+    img.onerror = rej
+  })
+}
 
-const factor = 80
-game.width = 16 * factor
-game.height = 9 * factor
+(async () => {
+  const forest = await loadImageData('./images/forest.jpg')
+  const wall = await loadImageData('./images/wall.jpg')
 
-const ctx = game.getContext("2d")
-if (ctx === null)
-  throw new Error("Context 2D is not supported")
+  const scene: Scene = [
+    [forest, wall, Color.cyan(), forest, null, null, null, null, null, null],
+    [null, null, null, Color.yellow(), null, null, null, null, null, null],
+    [null, Color.red(), Color.green(), Color.blue(), null, null, null, null, null, null],
+    [null, null, null, null, null, null, null, null, null, null],
+    [null, null, null, null, null, wall, null, null, null, null],
+    [wall, wall, wall, null, wall, wall, null, null, null, forest],
+    [wall, null, null, null, null, wall, wall, wall, wall, forest],
+  ]
 
-const scene: Scene = [
-  ["gray", "gray", "cyan", "purple", "gray", "gray", "gray", "gray", "gray", "gray"],
-  ["gray", null, null, "yellow", null, null, null, null, null, "gray"],
-  ["gray", "red", null, "blue", null, null, null, null, null, "gray"],
-  ["gray", "green", null, null, null, null, null, null, null, "gray"],
-  ["gray", null, null, null, null, null, null, null, null, "gray"],
-  ["gray", null, null, null, null, null, null, null, null, "gray"],
-  ["gray", "gray", "gray", "gray", "gray", "gray", "gray", "gray", "gray", "gray"],
-]
-const player = new Player(
-  sceneSize(scene).mul(new Vector2(0.63, 0.63)),
-  Math.PI * 1.25
-)
+  const game = document.getElementById('game') as (HTMLCanvasElement | null);
+  if (game === null)
+    throw new Error("No canvas with id `game` is found")
 
-window.addEventListener("keydown", (e) => {
-  switch (e.code) {
-    case 'KeyW':
-      player.position = player.position
-        .add(Vector2.fromAngle(player.direction).scale(PLAYER_STEP_LEN))
-      renderGame(ctx, player, scene)
-      break
-    case 'KeyS':
-      player.position = player.position
-        .sub(Vector2.fromAngle(player.direction).scale(PLAYER_STEP_LEN))
-      renderGame(ctx, player, scene)
-      break
-    case 'KeyD':
-      player.position = player.position
-        .add(Vector2.fromAngle(player.direction).rot90().scale(PLAYER_STEP_LEN))
-      renderGame(ctx, player, scene)
-      break
-    case 'KeyA':
-      player.position = player.position
-        .sub(Vector2.fromAngle(player.direction).rot90().scale(PLAYER_STEP_LEN))
-      renderGame(ctx, player, scene)
-      break
-    case 'KeyE':
-      player.direction += Math.PI * 0.1
-      renderGame(ctx, player, scene)
-      break
-    case 'KeyQ':
-      player.direction -= Math.PI * 0.1
-      renderGame(ctx, player, scene)
-      break
-  }
-})
+  const factor = 100
+  game.width = 16 * factor
+  game.height = 9 * factor
 
-let lastClientX: number | null = null
+  const ctx = game.getContext("2d")
+  if (ctx === null)
+    throw new Error("Context 2D is not supported")
 
-game.addEventListener('mousemove', (e) => {
-  if (lastClientX) {
-    player.direction += (e.clientX - lastClientX) * CAMERA_SENSITIVITY / 50
+  const player = new Player(
+    sceneSize(scene).mul(new Vector2(0.63, 0.63)),
+    Math.PI * 1.25
+  )
+  let movingForward = false
+  let movingBackward = false
+  let movingLeft = false
+  let movingRight = false
+  let turningLeft = false
+  let turningRight = false
+
+  window.addEventListener("keydown", (e) => {
+    if (!e.repeat)
+      switch (e.code) {
+        case 'KeyW':
+          movingForward = true
+          break
+        case 'KeyS':
+          movingBackward = true
+          break
+        case 'KeyD':
+          movingRight = true
+          break
+        case 'KeyA':
+          movingLeft = true
+          break
+        case 'KeyE':
+          turningRight = true
+          break
+        case 'KeyQ':
+          turningLeft = true
+          break
+      }
+  })
+
+  window.addEventListener("keyup", (e) => {
+    if (!e.repeat)
+      switch (e.code) {
+        case 'KeyW':
+          movingForward = false
+          break
+        case 'KeyS':
+          movingBackward = false
+          break
+        case 'KeyD':
+          movingRight = false
+          break
+        case 'KeyA':
+          movingLeft = false
+          break
+        case 'KeyE':
+          turningRight = false
+          break
+        case 'KeyQ':
+          turningLeft = false
+          break
+      }
+  })
+
+  let prevTimestamp = 0
+  const frame = (timestamp: number) => {
+    const deltaTime = (timestamp - prevTimestamp) / 1000
+    prevTimestamp = timestamp
+    let velocity = Vector2.zero()
+    let angularVelocity = 0.0
+    if (movingForward)
+      velocity = velocity.add(Vector2.fromAngle(player.direction).scale(PLAYER_SPEED))
+    if (movingBackward)
+      velocity = velocity.sub(Vector2.fromAngle(player.direction).scale(PLAYER_SPEED))
+    if (movingLeft)
+      velocity = velocity.sub(Vector2.fromAngle(player.direction).scale(PLAYER_SPEED).rot90())
+    if (movingRight)
+      velocity = velocity.add(Vector2.fromAngle(player.direction).scale(PLAYER_SPEED).rot90())
+    if (turningLeft)
+      angularVelocity -= Math.PI * 0.5;
+    if (turningRight)
+      angularVelocity += Math.PI * 0.5;
+
+    player.direction += angularVelocity * deltaTime
+    const towards = player.position.add(velocity.scale(deltaTime))
+    const cell = new Vector2(Math.floor(towards.x), Math.floor(towards.y))
+    if (!insideScene(scene, towards) || scene[cell.y][cell.x] === null)
+      player.position = towards
     renderGame(ctx, player, scene)
+    window.requestAnimationFrame(frame)
   }
-  lastClientX = e.clientX
-})
+  window.requestAnimationFrame(timestamp => {
+    prevTimestamp = timestamp
+    window.requestAnimationFrame(frame)
+  })
+})()
 
-renderGame(ctx, player, scene)
